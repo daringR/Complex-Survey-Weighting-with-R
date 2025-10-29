@@ -1,0 +1,146 @@
+---
+title: "Nonresponse Adjustment Using Regression Trees"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(123)
+```
+
+## Overview
+
+This notebook demonstrates how to perform a **nonresponse adjustment** using **regression trees**. We fit a tree to a binary response indicator (R = 1 respondent, 0 nonrespondent), use the **terminal nodes (leaves)** as **adjustment cells**, and inflate respondent weights within each cell to represent the full sample.
+
+### Method outline
+
+1.  Fit a regression tree for the response indicator using available covariates (R \~ X).
+2.  Use **leaves** as adjustment cells (each case is assigned to exactly one leaf).
+3.  In each leaf (c), compute the **nonresponse adjustment ratio**: \[ A_c = \frac{\sum_{i \in c} w_i}{\sum_{i \in c, R} w_i} \]
+4.  Multiply each respondent's base weight by (A_c); set nonrespondents' adjusted weights to 0.
+5.  Verify **mass preservation**: within each leaf and overall, adjusted respondent weights sum to the original total weight.
+
+## Simulate Data
+
+```{r simulate}
+N <- 2000
+
+dat <- data.frame(
+  age    = round(runif(N, 18, 70)),
+  female = rbinom(N, 1, 0.52),
+  income = exp(rnorm(N, log(50000), 0.6)),  # skewed income
+  urban  = rbinom(N, 1, 0.7),
+  priorR = rbinom(N, 1, 0.6)                # prior-wave response indicator
+)
+
+# Base (design) weights: stand-in for real design weights
+dat$w <- runif(N, 0.5, 2.0)
+
+# Generate true response propensities and observed response
+linpred <- -1.2 + 0.01*(dat$age-40) + 0.2*dat$female + 0.3*dat$priorR - 0.000005*(dat$income-50000) + 0.15*dat$urban
+p_true  <- 1/(1 + exp(-linpred))
+dat$R   <- rbinom(N, 1, p_true)  # 1 = respondent, 0 = nonrespondent
+
+summary(dat)
+```
+
+## Fit a Regression Tree
+
+We use `rpart` with `method = "anova"` so leaf predictions are the **mean of R** (i.e., estimated response propensity) within the leaf.
+
+```{r fit-tree}
+if (!requireNamespace("rpart", quietly = TRUE)) install.packages("rpart")
+library(rpart)
+
+tree <- rpart(
+  R ~ age + female + income + urban + priorR,
+  data = dat,
+  method = "anova",
+  control = rpart.control(cp = 0.005, minbucket = 60)
+)
+
+tree
+```
+
+Optional visualization:
+
+```{r plot-tree, eval=TRUE}
+if (!requireNamespace("rpart.plot", quietly = TRUE)) install.packages("rpart.plot")
+rpart.plot::rpart.plot(tree, type = 2, extra = 1)
+```
+
+## Assign Leaves and Compute Adjustment Ratios
+
+Each observation is assigned to a terminal node (leaf). We then compute the **nonresponse adjustment ratio** (A_c) for each leaf.
+
+```{r leaves-adjust}
+# Identify leaf for each case
+leaf_id <- tree$where
+dat$leaf <- as.integer(leaf_id)
+
+# Sums by leaf
+agg_all  <- aggregate(w ~ leaf, data = dat, sum); names(agg_all)[2]  <- "sum_w_all"
+agg_resp <- aggregate(w ~ leaf, data = subset(dat, R == 1), sum); names(agg_resp)[2] <- "sum_w_resp"
+
+leaf_tab <- merge(agg_all, agg_resp, by = "leaf", all.x = TRUE)
+leaf_tab$sum_w_resp[is.na(leaf_tab$sum_w_resp)] <- 0
+
+eps <- 1e-8
+leaf_tab$A <- leaf_tab$sum_w_all / pmax(leaf_tab$sum_w_resp, eps)
+
+head(leaf_tab[order(leaf_tab$A, decreasing = TRUE), ], 10)
+```
+
+## Create Adjusted Weights
+
+Respondents receive adjusted weights (w_i\^\* = w_i \cdot A_c); nonrespondents receive 0.
+
+```{r adjusted-weights}
+dat <- merge(dat, leaf_tab[, c("leaf", "A")], by = "leaf", all.x = TRUE)
+dat$w_adj <- ifelse(dat$R == 1, dat$w * dat$A, 0)
+
+head(dat)
+```
+
+## Diagnostics
+
+### 1. Mass Preservation by Leaf
+
+Within each leaf, the adjusted respondent weights should sum to the original total weight in that leaf.
+
+```{r diag-leaf}
+check_leaf <- aggregate(cbind(sum_w_all = dat$w,
+                              sum_w_resp_adj = dat$w_adj) ~ leaf, data = dat, sum)
+check_leaf$diff <- check_leaf$sum_w_all - check_leaf$sum_w_resp_adj
+head(check_leaf[order(abs(check_leaf$diff), decreasing = TRUE), ])
+```
+
+### 2. Global Mass Preservation
+
+Overall, the adjusted respondent weights should equal the original total weight.
+
+```{r diag-global}
+total_all <- sum(dat$w)
+total_adj <- sum(dat$w_adj)
+c(total_all = total_all, total_adj = total_adj, difference = total_all - total_adj)
+```
+
+### 3. Leaf-Level Estimated Propensities
+
+```{r leaf-prop}
+leaf_prop <- aggregate(R ~ leaf, data = dat, mean)
+leaf_prop[order(leaf_prop$R), ][1:10, ]
+```
+
+## Notes & Practical Tips
+
+-   Use **pruning** or increase `minbucket` to avoid tiny leaves (unstable ratios).
+-   Consider **trimming** very large adjustment factors (A_c) to control variance.
+-   Include **design variables** (strata, PSU proxies) and frame/admin covariates when available.
+-   After adjustment, proceed with standard survey analyses using `w_adj` for respondents.

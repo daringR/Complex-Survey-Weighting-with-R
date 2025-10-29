@@ -1,0 +1,710 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xml:lang="en"><head>
+
+<meta charset="utf-8">
+<meta name="generator" content="quarto-1.7.32">
+
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes">
+
+
+<title>Nonresponse Adjustment Using Regression Trees</title>
+<style>
+code{white-space: pre-wrap;}
+span.smallcaps{font-variant: small-caps;}
+div.columns{display: flex; gap: min(4vw, 1.5em);}
+div.column{flex: auto; overflow-x: auto;}
+div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+ul.task-list{list-style: none;}
+ul.task-list li input[type="checkbox"] {
+  width: 0.8em;
+  margin: 0 0.8em 0.2em -1em; /* quarto-specific, see https://github.com/quarto-dev/quarto-cli/issues/4556 */ 
+  vertical-align: middle;
+}
+/* CSS for syntax highlighting */
+html { -webkit-text-size-adjust: 100%; }
+pre > code.sourceCode { white-space: pre; position: relative; }
+pre > code.sourceCode > span { display: inline-block; line-height: 1.25; }
+pre > code.sourceCode > span:empty { height: 1.2em; }
+.sourceCode { overflow: visible; }
+code.sourceCode > span { color: inherit; text-decoration: inherit; }
+div.sourceCode { margin: 1em 0; }
+pre.sourceCode { margin: 0; }
+@media screen {
+div.sourceCode { overflow: auto; }
+}
+@media print {
+pre > code.sourceCode { white-space: pre-wrap; }
+pre > code.sourceCode > span { text-indent: -5em; padding-left: 5em; }
+}
+pre.numberSource code
+  { counter-reset: source-line 0; }
+pre.numberSource code > span
+  { position: relative; left: -4em; counter-increment: source-line; }
+pre.numberSource code > span > a:first-child::before
+  { content: counter(source-line);
+    position: relative; left: -1em; text-align: right; vertical-align: baseline;
+    border: none; display: inline-block;
+    -webkit-touch-callout: none; -webkit-user-select: none;
+    -khtml-user-select: none; -moz-user-select: none;
+    -ms-user-select: none; user-select: none;
+    padding: 0 4px; width: 4em;
+  }
+pre.numberSource { margin-left: 3em;  padding-left: 4px; }
+div.sourceCode
+  {   }
+@media screen {
+pre > code.sourceCode > span > a:first-child::before { text-decoration: underline; }
+}
+</style>
+
+
+<script src="nonresponse_regression_tree_adjustment_files/libs/clipboard/clipboard.min.js"></script>
+<script src="nonresponse_regression_tree_adjustment_files/libs/quarto-html/quarto.js" type="module"></script>
+<script src="nonresponse_regression_tree_adjustment_files/libs/quarto-html/tabsets/tabsets.js" type="module"></script>
+<script src="nonresponse_regression_tree_adjustment_files/libs/quarto-html/popper.min.js"></script>
+<script src="nonresponse_regression_tree_adjustment_files/libs/quarto-html/tippy.umd.min.js"></script>
+<script src="nonresponse_regression_tree_adjustment_files/libs/quarto-html/anchor.min.js"></script>
+<link href="nonresponse_regression_tree_adjustment_files/libs/quarto-html/tippy.css" rel="stylesheet">
+<link href="nonresponse_regression_tree_adjustment_files/libs/quarto-html/quarto-syntax-highlighting-37eea08aefeeee20ff55810ff984fec1.css" rel="stylesheet" id="quarto-text-highlighting-styles">
+<script src="nonresponse_regression_tree_adjustment_files/libs/bootstrap/bootstrap.min.js"></script>
+<link href="nonresponse_regression_tree_adjustment_files/libs/bootstrap/bootstrap-icons.css" rel="stylesheet">
+<link href="nonresponse_regression_tree_adjustment_files/libs/bootstrap/bootstrap-bb462d781dde1847d9e3ccf7736099dd.min.css" rel="stylesheet" append-hash="true" id="quarto-bootstrap" data-mode="light">
+
+
+</head>
+
+<body class="fullcontent quarto-light">
+
+<div id="quarto-content" class="page-columns page-rows-contents page-layout-article">
+
+<main class="content" id="quarto-document-content">
+
+<header id="title-block-header" class="quarto-title-block default">
+<div class="quarto-title">
+<h1 class="title">Nonresponse Adjustment Using Regression Trees</h1>
+</div>
+
+
+
+<div class="quarto-title-meta">
+
+    
+  
+    
+  </div>
+  
+
+
+</header>
+
+
+<section id="overview" class="level2">
+<h2 class="anchored" data-anchor-id="overview">Overview</h2>
+<p>This notebook demonstrates how to perform a <strong>nonresponse adjustment</strong> using <strong>regression trees</strong>. We fit a tree to a binary response indicator (R = 1 respondent, 0 nonrespondent), use the <strong>terminal nodes (leaves)</strong> as <strong>adjustment cells</strong>, and inflate respondent weights within each cell to represent the full sample.</p>
+<section id="method-outline" class="level3">
+<h3 class="anchored" data-anchor-id="method-outline">Method outline</h3>
+<ol type="1">
+<li>Fit a regression tree for the response indicator using available covariates (R ~ X).</li>
+<li>Use <strong>leaves</strong> as adjustment cells (each case is assigned to exactly one leaf).</li>
+<li>In each leaf (c), compute the <strong>nonresponse adjustment ratio</strong>: [ A_c = ]</li>
+<li>Multiply each respondent’s base weight by (A_c); set nonrespondents’ adjusted weights to 0.</li>
+<li>Verify <strong>mass preservation</strong>: within each leaf and overall, adjusted respondent weights sum to the original total weight.</li>
+</ol>
+</section>
+</section>
+<section id="simulate-data" class="level2">
+<h2 class="anchored" data-anchor-id="simulate-data">Simulate Data</h2>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb1"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb1-1"><a href="#cb1-1" aria-hidden="true" tabindex="-1"></a>N <span class="ot">&lt;-</span> <span class="dv">2000</span></span>
+<span id="cb1-2"><a href="#cb1-2" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-3"><a href="#cb1-3" aria-hidden="true" tabindex="-1"></a>dat <span class="ot">&lt;-</span> <span class="fu">data.frame</span>(</span>
+<span id="cb1-4"><a href="#cb1-4" aria-hidden="true" tabindex="-1"></a>  <span class="at">age    =</span> <span class="fu">round</span>(<span class="fu">runif</span>(N, <span class="dv">18</span>, <span class="dv">70</span>)),</span>
+<span id="cb1-5"><a href="#cb1-5" aria-hidden="true" tabindex="-1"></a>  <span class="at">female =</span> <span class="fu">rbinom</span>(N, <span class="dv">1</span>, <span class="fl">0.52</span>),</span>
+<span id="cb1-6"><a href="#cb1-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">income =</span> <span class="fu">exp</span>(<span class="fu">rnorm</span>(N, <span class="fu">log</span>(<span class="dv">50000</span>), <span class="fl">0.6</span>)),  <span class="co"># skewed income</span></span>
+<span id="cb1-7"><a href="#cb1-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">urban  =</span> <span class="fu">rbinom</span>(N, <span class="dv">1</span>, <span class="fl">0.7</span>),</span>
+<span id="cb1-8"><a href="#cb1-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">priorR =</span> <span class="fu">rbinom</span>(N, <span class="dv">1</span>, <span class="fl">0.6</span>)                <span class="co"># prior-wave response indicator</span></span>
+<span id="cb1-9"><a href="#cb1-9" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb1-10"><a href="#cb1-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-11"><a href="#cb1-11" aria-hidden="true" tabindex="-1"></a><span class="co"># Base (design) weights: stand-in for real design weights</span></span>
+<span id="cb1-12"><a href="#cb1-12" aria-hidden="true" tabindex="-1"></a>dat<span class="sc">$</span>w <span class="ot">&lt;-</span> <span class="fu">runif</span>(N, <span class="fl">0.5</span>, <span class="fl">2.0</span>)</span>
+<span id="cb1-13"><a href="#cb1-13" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-14"><a href="#cb1-14" aria-hidden="true" tabindex="-1"></a><span class="co"># Generate true response propensities and observed response</span></span>
+<span id="cb1-15"><a href="#cb1-15" aria-hidden="true" tabindex="-1"></a>linpred <span class="ot">&lt;-</span> <span class="sc">-</span><span class="fl">1.2</span> <span class="sc">+</span> <span class="fl">0.01</span><span class="sc">*</span>(dat<span class="sc">$</span>age<span class="dv">-40</span>) <span class="sc">+</span> <span class="fl">0.2</span><span class="sc">*</span>dat<span class="sc">$</span>female <span class="sc">+</span> <span class="fl">0.3</span><span class="sc">*</span>dat<span class="sc">$</span>priorR <span class="sc">-</span> <span class="fl">0.000005</span><span class="sc">*</span>(dat<span class="sc">$</span>income<span class="dv">-50000</span>) <span class="sc">+</span> <span class="fl">0.15</span><span class="sc">*</span>dat<span class="sc">$</span>urban</span>
+<span id="cb1-16"><a href="#cb1-16" aria-hidden="true" tabindex="-1"></a>p_true  <span class="ot">&lt;-</span> <span class="dv">1</span><span class="sc">/</span>(<span class="dv">1</span> <span class="sc">+</span> <span class="fu">exp</span>(<span class="sc">-</span>linpred))</span>
+<span id="cb1-17"><a href="#cb1-17" aria-hidden="true" tabindex="-1"></a>dat<span class="sc">$</span>R   <span class="ot">&lt;-</span> <span class="fu">rbinom</span>(N, <span class="dv">1</span>, p_true)  <span class="co"># 1 = respondent, 0 = nonrespondent</span></span>
+<span id="cb1-18"><a href="#cb1-18" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb1-19"><a href="#cb1-19" aria-hidden="true" tabindex="-1"></a><span class="fu">summary</span>(dat)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>      age            female           income           urban       
+ Min.   :18.00   Min.   :0.0000   Min.   :  7649   Min.   :0.0000  
+ 1st Qu.:31.00   1st Qu.:0.0000   1st Qu.: 33893   1st Qu.:0.0000  
+ Median :44.00   Median :1.0000   Median : 49260   Median :1.0000  
+ Mean   :43.88   Mean   :0.5145   Mean   : 58988   Mean   :0.7105  
+ 3rd Qu.:57.00   3rd Qu.:1.0000   3rd Qu.: 73776   3rd Qu.:1.0000  
+ Max.   :70.00   Max.   :1.0000   Max.   :389428   Max.   :1.0000  
+     priorR            w                R         
+ Min.   :0.000   Min.   :0.5002   Min.   :0.0000  
+ 1st Qu.:0.000   1st Qu.:0.8674   1st Qu.:0.0000  
+ Median :1.000   Median :1.2246   Median :0.0000  
+ Mean   :0.595   Mean   :1.2423   Mean   :0.2995  
+ 3rd Qu.:1.000   3rd Qu.:1.6402   3rd Qu.:1.0000  
+ Max.   :1.000   Max.   :1.9992   Max.   :1.0000  </code></pre>
+</div>
+</div>
+</section>
+<section id="fit-a-regression-tree" class="level2">
+<h2 class="anchored" data-anchor-id="fit-a-regression-tree">Fit a Regression Tree</h2>
+<p>We use <code>rpart</code> with <code>method = "anova"</code> so leaf predictions are the <strong>mean of R</strong> (i.e., estimated response propensity) within the leaf.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb3"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb3-1"><a href="#cb3-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> (<span class="sc">!</span><span class="fu">requireNamespace</span>(<span class="st">"rpart"</span>, <span class="at">quietly =</span> <span class="cn">TRUE</span>)) <span class="fu">install.packages</span>(<span class="st">"rpart"</span>)</span>
+<span id="cb3-2"><a href="#cb3-2" aria-hidden="true" tabindex="-1"></a><span class="fu">library</span>(rpart)</span>
+<span id="cb3-3"><a href="#cb3-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-4"><a href="#cb3-4" aria-hidden="true" tabindex="-1"></a>tree <span class="ot">&lt;-</span> <span class="fu">rpart</span>(</span>
+<span id="cb3-5"><a href="#cb3-5" aria-hidden="true" tabindex="-1"></a>  R <span class="sc">~</span> age <span class="sc">+</span> female <span class="sc">+</span> income <span class="sc">+</span> urban <span class="sc">+</span> priorR,</span>
+<span id="cb3-6"><a href="#cb3-6" aria-hidden="true" tabindex="-1"></a>  <span class="at">data =</span> dat,</span>
+<span id="cb3-7"><a href="#cb3-7" aria-hidden="true" tabindex="-1"></a>  <span class="at">method =</span> <span class="st">"anova"</span>,</span>
+<span id="cb3-8"><a href="#cb3-8" aria-hidden="true" tabindex="-1"></a>  <span class="at">control =</span> <span class="fu">rpart.control</span>(<span class="at">cp =</span> <span class="fl">0.005</span>, <span class="at">minbucket =</span> <span class="dv">60</span>)</span>
+<span id="cb3-9"><a href="#cb3-9" aria-hidden="true" tabindex="-1"></a>)</span>
+<span id="cb3-10"><a href="#cb3-10" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb3-11"><a href="#cb3-11" aria-hidden="true" tabindex="-1"></a>tree</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>n= 2000 
+
+node), split, n, deviance, yval
+      * denotes terminal node
+
+1) root 2000 419.59950 0.2995000  
+  2) priorR&lt; 0.5 810 155.55560 0.2592593 *
+  3) priorR&gt;=0.5 1190 261.83950 0.3268908  
+    6) income&gt;=36471.58 842 176.17700 0.2980998 *
+    7) income&lt; 36471.58 348  83.27586 0.3965517 *</code></pre>
+</div>
+</div>
+<p>Optional visualization:</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb5"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb5-1"><a href="#cb5-1" aria-hidden="true" tabindex="-1"></a><span class="cf">if</span> (<span class="sc">!</span><span class="fu">requireNamespace</span>(<span class="st">"rpart.plot"</span>, <span class="at">quietly =</span> <span class="cn">TRUE</span>)) <span class="fu">install.packages</span>(<span class="st">"rpart.plot"</span>)</span>
+<span id="cb5-2"><a href="#cb5-2" aria-hidden="true" tabindex="-1"></a>rpart.plot<span class="sc">::</span><span class="fu">rpart.plot</span>(tree, <span class="at">type =</span> <span class="dv">2</span>, <span class="at">extra =</span> <span class="dv">1</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output-display">
+<div>
+<figure class="figure">
+<p><img src="nonresponse_regression_tree_adjustment_files/figure-html/plot-tree-1.png" class="img-fluid figure-img" width="672"></p>
+</figure>
+</div>
+</div>
+</div>
+</section>
+<section id="assign-leaves-and-compute-adjustment-ratios" class="level2">
+<h2 class="anchored" data-anchor-id="assign-leaves-and-compute-adjustment-ratios">Assign Leaves and Compute Adjustment Ratios</h2>
+<p>Each observation is assigned to a terminal node (leaf). We then compute the <strong>nonresponse adjustment ratio</strong> (A_c) for each leaf.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb6"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb6-1"><a href="#cb6-1" aria-hidden="true" tabindex="-1"></a><span class="co"># Identify leaf for each case</span></span>
+<span id="cb6-2"><a href="#cb6-2" aria-hidden="true" tabindex="-1"></a>leaf_id <span class="ot">&lt;-</span> tree<span class="sc">$</span>where</span>
+<span id="cb6-3"><a href="#cb6-3" aria-hidden="true" tabindex="-1"></a>dat<span class="sc">$</span>leaf <span class="ot">&lt;-</span> <span class="fu">as.integer</span>(leaf_id)</span>
+<span id="cb6-4"><a href="#cb6-4" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-5"><a href="#cb6-5" aria-hidden="true" tabindex="-1"></a><span class="co"># Sums by leaf</span></span>
+<span id="cb6-6"><a href="#cb6-6" aria-hidden="true" tabindex="-1"></a>agg_all  <span class="ot">&lt;-</span> <span class="fu">aggregate</span>(w <span class="sc">~</span> leaf, <span class="at">data =</span> dat, sum); <span class="fu">names</span>(agg_all)[<span class="dv">2</span>]  <span class="ot">&lt;-</span> <span class="st">"sum_w_all"</span></span>
+<span id="cb6-7"><a href="#cb6-7" aria-hidden="true" tabindex="-1"></a>agg_resp <span class="ot">&lt;-</span> <span class="fu">aggregate</span>(w <span class="sc">~</span> leaf, <span class="at">data =</span> <span class="fu">subset</span>(dat, R <span class="sc">==</span> <span class="dv">1</span>), sum); <span class="fu">names</span>(agg_resp)[<span class="dv">2</span>] <span class="ot">&lt;-</span> <span class="st">"sum_w_resp"</span></span>
+<span id="cb6-8"><a href="#cb6-8" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-9"><a href="#cb6-9" aria-hidden="true" tabindex="-1"></a>leaf_tab <span class="ot">&lt;-</span> <span class="fu">merge</span>(agg_all, agg_resp, <span class="at">by =</span> <span class="st">"leaf"</span>, <span class="at">all.x =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb6-10"><a href="#cb6-10" aria-hidden="true" tabindex="-1"></a>leaf_tab<span class="sc">$</span>sum_w_resp[<span class="fu">is.na</span>(leaf_tab<span class="sc">$</span>sum_w_resp)] <span class="ot">&lt;-</span> <span class="dv">0</span></span>
+<span id="cb6-11"><a href="#cb6-11" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-12"><a href="#cb6-12" aria-hidden="true" tabindex="-1"></a>eps <span class="ot">&lt;-</span> <span class="fl">1e-8</span></span>
+<span id="cb6-13"><a href="#cb6-13" aria-hidden="true" tabindex="-1"></a>leaf_tab<span class="sc">$</span>A <span class="ot">&lt;-</span> leaf_tab<span class="sc">$</span>sum_w_all <span class="sc">/</span> <span class="fu">pmax</span>(leaf_tab<span class="sc">$</span>sum_w_resp, eps)</span>
+<span id="cb6-14"><a href="#cb6-14" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb6-15"><a href="#cb6-15" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(leaf_tab[<span class="fu">order</span>(leaf_tab<span class="sc">$</span>A, <span class="at">decreasing =</span> <span class="cn">TRUE</span>), ], <span class="dv">10</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>  leaf sum_w_all sum_w_resp        A
+1    2 1000.0597   257.7043 3.880649
+2    4 1053.8460   316.6660 3.327941
+3    5  430.7358   171.4504 2.512305</code></pre>
+</div>
+</div>
+</section>
+<section id="create-adjusted-weights" class="level2">
+<h2 class="anchored" data-anchor-id="create-adjusted-weights">Create Adjusted Weights</h2>
+<p>Respondents receive adjusted weights (w_i^* = w_i A_c); nonrespondents receive 0.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb8"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb8-1"><a href="#cb8-1" aria-hidden="true" tabindex="-1"></a>dat <span class="ot">&lt;-</span> <span class="fu">merge</span>(dat, leaf_tab[, <span class="fu">c</span>(<span class="st">"leaf"</span>, <span class="st">"A"</span>)], <span class="at">by =</span> <span class="st">"leaf"</span>, <span class="at">all.x =</span> <span class="cn">TRUE</span>)</span>
+<span id="cb8-2"><a href="#cb8-2" aria-hidden="true" tabindex="-1"></a>dat<span class="sc">$</span>w_adj <span class="ot">&lt;-</span> <span class="fu">ifelse</span>(dat<span class="sc">$</span>R <span class="sc">==</span> <span class="dv">1</span>, dat<span class="sc">$</span>w <span class="sc">*</span> dat<span class="sc">$</span>A, <span class="dv">0</span>)</span>
+<span id="cb8-3"><a href="#cb8-3" aria-hidden="true" tabindex="-1"></a></span>
+<span id="cb8-4"><a href="#cb8-4" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(dat)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>  leaf age female    income urban priorR         w R        A    w_adj
+1    2  22      1  84003.07     1      0 0.6000639 1 3.880649 2.328637
+2    2  65      1  34659.80     0      0 1.8583670 1 3.880649 7.211669
+3    2  67      1  26437.26     0      0 1.9761254 0 3.880649 0.000000
+4    2  29      1  72915.77     0      0 1.6548239 0 3.880649 0.000000
+5    2  51      0 171936.21     0      0 0.8245422 0 3.880649 0.000000
+6    2  22      0  21702.18     1      0 0.6164036 1 3.880649 2.392046</code></pre>
+</div>
+</div>
+</section>
+<section id="diagnostics" class="level2">
+<h2 class="anchored" data-anchor-id="diagnostics">Diagnostics</h2>
+<section id="mass-preservation-by-leaf" class="level3">
+<h3 class="anchored" data-anchor-id="mass-preservation-by-leaf">1. Mass Preservation by Leaf</h3>
+<p>Within each leaf, the adjusted respondent weights should sum to the original total weight in that leaf.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb10"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb10-1"><a href="#cb10-1" aria-hidden="true" tabindex="-1"></a>check_leaf <span class="ot">&lt;-</span> <span class="fu">aggregate</span>(<span class="fu">cbind</span>(<span class="at">sum_w_all =</span> dat<span class="sc">$</span>w,</span>
+<span id="cb10-2"><a href="#cb10-2" aria-hidden="true" tabindex="-1"></a>                              <span class="at">sum_w_resp_adj =</span> dat<span class="sc">$</span>w_adj) <span class="sc">~</span> leaf, <span class="at">data =</span> dat, sum)</span>
+<span id="cb10-3"><a href="#cb10-3" aria-hidden="true" tabindex="-1"></a>check_leaf<span class="sc">$</span>diff <span class="ot">&lt;-</span> check_leaf<span class="sc">$</span>sum_w_all <span class="sc">-</span> check_leaf<span class="sc">$</span>sum_w_resp_adj</span>
+<span id="cb10-4"><a href="#cb10-4" aria-hidden="true" tabindex="-1"></a><span class="fu">head</span>(check_leaf[<span class="fu">order</span>(<span class="fu">abs</span>(check_leaf<span class="sc">$</span>diff), <span class="at">decreasing =</span> <span class="cn">TRUE</span>), ])</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>  leaf sum_w_all sum_w_resp_adj          diff
+3    5  430.7358       430.7358 -5.684342e-14
+1    2 1000.0597      1000.0597  0.000000e+00
+2    4 1053.8460      1053.8460  0.000000e+00</code></pre>
+</div>
+</div>
+</section>
+<section id="global-mass-preservation" class="level3">
+<h3 class="anchored" data-anchor-id="global-mass-preservation">2. Global Mass Preservation</h3>
+<p>Overall, the adjusted respondent weights should equal the original total weight.</p>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb12"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb12-1"><a href="#cb12-1" aria-hidden="true" tabindex="-1"></a>total_all <span class="ot">&lt;-</span> <span class="fu">sum</span>(dat<span class="sc">$</span>w)</span>
+<span id="cb12-2"><a href="#cb12-2" aria-hidden="true" tabindex="-1"></a>total_adj <span class="ot">&lt;-</span> <span class="fu">sum</span>(dat<span class="sc">$</span>w_adj)</span>
+<span id="cb12-3"><a href="#cb12-3" aria-hidden="true" tabindex="-1"></a><span class="fu">c</span>(<span class="at">total_all =</span> total_all, <span class="at">total_adj =</span> total_adj, <span class="at">difference =</span> total_all <span class="sc">-</span> total_adj)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code> total_all  total_adj difference 
+  2484.642   2484.642      0.000 </code></pre>
+</div>
+</div>
+</section>
+<section id="leaf-level-estimated-propensities" class="level3">
+<h3 class="anchored" data-anchor-id="leaf-level-estimated-propensities">3. Leaf-Level Estimated Propensities</h3>
+<div class="cell">
+<div class="sourceCode cell-code" id="cb14"><pre class="sourceCode r code-with-copy"><code class="sourceCode r"><span id="cb14-1"><a href="#cb14-1" aria-hidden="true" tabindex="-1"></a>leaf_prop <span class="ot">&lt;-</span> <span class="fu">aggregate</span>(R <span class="sc">~</span> leaf, <span class="at">data =</span> dat, mean)</span>
+<span id="cb14-2"><a href="#cb14-2" aria-hidden="true" tabindex="-1"></a>leaf_prop[<span class="fu">order</span>(leaf_prop<span class="sc">$</span>R), ][<span class="dv">1</span><span class="sc">:</span><span class="dv">10</span>, ]</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
+<div class="cell-output cell-output-stdout">
+<pre><code>     leaf         R
+1       2 0.2592593
+2       4 0.2980998
+3       5 0.3965517
+NA     NA        NA
+NA.1   NA        NA
+NA.2   NA        NA
+NA.3   NA        NA
+NA.4   NA        NA
+NA.5   NA        NA
+NA.6   NA        NA</code></pre>
+</div>
+</div>
+</section>
+</section>
+<section id="notes-practical-tips" class="level2">
+<h2 class="anchored" data-anchor-id="notes-practical-tips">Notes &amp; Practical Tips</h2>
+<ul>
+<li>Use <strong>pruning</strong> or increase <code>minbucket</code> to avoid tiny leaves (unstable ratios).</li>
+<li>Consider <strong>trimming</strong> very large adjustment factors (A_c) to control variance.</li>
+<li>Include <strong>design variables</strong> (strata, PSU proxies) and frame/admin covariates when available.</li>
+<li>After adjustment, proceed with standard survey analyses using <code>w_adj</code> for respondents.</li>
+</ul>
+</section>
+
+</main>
+<!-- /main column -->
+<script id="quarto-html-after-body" type="application/javascript">
+  window.document.addEventListener("DOMContentLoaded", function (event) {
+    const icon = "";
+    const anchorJS = new window.AnchorJS();
+    anchorJS.options = {
+      placement: 'right',
+      icon: icon
+    };
+    anchorJS.add('.anchored');
+    const isCodeAnnotation = (el) => {
+      for (const clz of el.classList) {
+        if (clz.startsWith('code-annotation-')) {                     
+          return true;
+        }
+      }
+      return false;
+    }
+    const onCopySuccess = function(e) {
+      // button target
+      const button = e.trigger;
+      // don't keep focus
+      button.blur();
+      // flash "checked"
+      button.classList.add('code-copy-button-checked');
+      var currentTitle = button.getAttribute("title");
+      button.setAttribute("title", "Copied!");
+      let tooltip;
+      if (window.bootstrap) {
+        button.setAttribute("data-bs-toggle", "tooltip");
+        button.setAttribute("data-bs-placement", "left");
+        button.setAttribute("data-bs-title", "Copied!");
+        tooltip = new bootstrap.Tooltip(button, 
+          { trigger: "manual", 
+            customClass: "code-copy-button-tooltip",
+            offset: [0, -8]});
+        tooltip.show();    
+      }
+      setTimeout(function() {
+        if (tooltip) {
+          tooltip.hide();
+          button.removeAttribute("data-bs-title");
+          button.removeAttribute("data-bs-toggle");
+          button.removeAttribute("data-bs-placement");
+        }
+        button.setAttribute("title", currentTitle);
+        button.classList.remove('code-copy-button-checked');
+      }, 1000);
+      // clear code selection
+      e.clearSelection();
+    }
+    const getTextToCopy = function(trigger) {
+        const codeEl = trigger.previousElementSibling.cloneNode(true);
+        for (const childEl of codeEl.children) {
+          if (isCodeAnnotation(childEl)) {
+            childEl.remove();
+          }
+        }
+        return codeEl.innerText;
+    }
+    const clipboard = new window.ClipboardJS('.code-copy-button:not([data-in-quarto-modal])', {
+      text: getTextToCopy
+    });
+    clipboard.on('success', onCopySuccess);
+    if (window.document.getElementById('quarto-embedded-source-code-modal')) {
+      const clipboardModal = new window.ClipboardJS('.code-copy-button[data-in-quarto-modal]', {
+        text: getTextToCopy,
+        container: window.document.getElementById('quarto-embedded-source-code-modal')
+      });
+      clipboardModal.on('success', onCopySuccess);
+    }
+      var localhostRegex = new RegExp(/^(?:http|https):\/\/localhost\:?[0-9]*\//);
+      var mailtoRegex = new RegExp(/^mailto:/);
+        var filterRegex = new RegExp('/' + window.location.host + '/');
+      var isInternal = (href) => {
+          return filterRegex.test(href) || localhostRegex.test(href) || mailtoRegex.test(href);
+      }
+      // Inspect non-navigation links and adorn them if external
+     var links = window.document.querySelectorAll('a[href]:not(.nav-link):not(.navbar-brand):not(.toc-action):not(.sidebar-link):not(.sidebar-item-toggle):not(.pagination-link):not(.no-external):not([aria-hidden]):not(.dropdown-item):not(.quarto-navigation-tool):not(.about-link)');
+      for (var i=0; i<links.length; i++) {
+        const link = links[i];
+        if (!isInternal(link.href)) {
+          // undo the damage that might have been done by quarto-nav.js in the case of
+          // links that we want to consider external
+          if (link.dataset.originalHref !== undefined) {
+            link.href = link.dataset.originalHref;
+          }
+        }
+      }
+    function tippyHover(el, contentFn, onTriggerFn, onUntriggerFn) {
+      const config = {
+        allowHTML: true,
+        maxWidth: 500,
+        delay: 100,
+        arrow: false,
+        appendTo: function(el) {
+            return el.parentElement;
+        },
+        interactive: true,
+        interactiveBorder: 10,
+        theme: 'quarto',
+        placement: 'bottom-start',
+      };
+      if (contentFn) {
+        config.content = contentFn;
+      }
+      if (onTriggerFn) {
+        config.onTrigger = onTriggerFn;
+      }
+      if (onUntriggerFn) {
+        config.onUntrigger = onUntriggerFn;
+      }
+      window.tippy(el, config); 
+    }
+    const noterefs = window.document.querySelectorAll('a[role="doc-noteref"]');
+    for (var i=0; i<noterefs.length; i++) {
+      const ref = noterefs[i];
+      tippyHover(ref, function() {
+        // use id or data attribute instead here
+        let href = ref.getAttribute('data-footnote-href') || ref.getAttribute('href');
+        try { href = new URL(href).hash; } catch {}
+        const id = href.replace(/^#\/?/, "");
+        const note = window.document.getElementById(id);
+        if (note) {
+          return note.innerHTML;
+        } else {
+          return "";
+        }
+      });
+    }
+    const xrefs = window.document.querySelectorAll('a.quarto-xref');
+    const processXRef = (id, note) => {
+      // Strip column container classes
+      const stripColumnClz = (el) => {
+        el.classList.remove("page-full", "page-columns");
+        if (el.children) {
+          for (const child of el.children) {
+            stripColumnClz(child);
+          }
+        }
+      }
+      stripColumnClz(note)
+      if (id === null || id.startsWith('sec-')) {
+        // Special case sections, only their first couple elements
+        const container = document.createElement("div");
+        if (note.children && note.children.length > 2) {
+          container.appendChild(note.children[0].cloneNode(true));
+          for (let i = 1; i < note.children.length; i++) {
+            const child = note.children[i];
+            if (child.tagName === "P" && child.innerText === "") {
+              continue;
+            } else {
+              container.appendChild(child.cloneNode(true));
+              break;
+            }
+          }
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(container);
+          }
+          return container.innerHTML
+        } else {
+          if (window.Quarto?.typesetMath) {
+            window.Quarto.typesetMath(note);
+          }
+          return note.innerHTML;
+        }
+      } else {
+        // Remove any anchor links if they are present
+        const anchorLink = note.querySelector('a.anchorjs-link');
+        if (anchorLink) {
+          anchorLink.remove();
+        }
+        if (window.Quarto?.typesetMath) {
+          window.Quarto.typesetMath(note);
+        }
+        if (note.classList.contains("callout")) {
+          return note.outerHTML;
+        } else {
+          return note.innerHTML;
+        }
+      }
+    }
+    for (var i=0; i<xrefs.length; i++) {
+      const xref = xrefs[i];
+      tippyHover(xref, undefined, function(instance) {
+        instance.disable();
+        let url = xref.getAttribute('href');
+        let hash = undefined; 
+        if (url.startsWith('#')) {
+          hash = url;
+        } else {
+          try { hash = new URL(url).hash; } catch {}
+        }
+        if (hash) {
+          const id = hash.replace(/^#\/?/, "");
+          const note = window.document.getElementById(id);
+          if (note !== null) {
+            try {
+              const html = processXRef(id, note.cloneNode(true));
+              instance.setContent(html);
+            } finally {
+              instance.enable();
+              instance.show();
+            }
+          } else {
+            // See if we can fetch this
+            fetch(url.split('#')[0])
+            .then(res => res.text())
+            .then(html => {
+              const parser = new DOMParser();
+              const htmlDoc = parser.parseFromString(html, "text/html");
+              const note = htmlDoc.getElementById(id);
+              if (note !== null) {
+                const html = processXRef(id, note);
+                instance.setContent(html);
+              } 
+            }).finally(() => {
+              instance.enable();
+              instance.show();
+            });
+          }
+        } else {
+          // See if we can fetch a full url (with no hash to target)
+          // This is a special case and we should probably do some content thinning / targeting
+          fetch(url)
+          .then(res => res.text())
+          .then(html => {
+            const parser = new DOMParser();
+            const htmlDoc = parser.parseFromString(html, "text/html");
+            const note = htmlDoc.querySelector('main.content');
+            if (note !== null) {
+              // This should only happen for chapter cross references
+              // (since there is no id in the URL)
+              // remove the first header
+              if (note.children.length > 0 && note.children[0].tagName === "HEADER") {
+                note.children[0].remove();
+              }
+              const html = processXRef(null, note);
+              instance.setContent(html);
+            } 
+          }).finally(() => {
+            instance.enable();
+            instance.show();
+          });
+        }
+      }, function(instance) {
+      });
+    }
+        let selectedAnnoteEl;
+        const selectorForAnnotation = ( cell, annotation) => {
+          let cellAttr = 'data-code-cell="' + cell + '"';
+          let lineAttr = 'data-code-annotation="' +  annotation + '"';
+          const selector = 'span[' + cellAttr + '][' + lineAttr + ']';
+          return selector;
+        }
+        const selectCodeLines = (annoteEl) => {
+          const doc = window.document;
+          const targetCell = annoteEl.getAttribute("data-target-cell");
+          const targetAnnotation = annoteEl.getAttribute("data-target-annotation");
+          const annoteSpan = window.document.querySelector(selectorForAnnotation(targetCell, targetAnnotation));
+          const lines = annoteSpan.getAttribute("data-code-lines").split(",");
+          const lineIds = lines.map((line) => {
+            return targetCell + "-" + line;
+          })
+          let top = null;
+          let height = null;
+          let parent = null;
+          if (lineIds.length > 0) {
+              //compute the position of the single el (top and bottom and make a div)
+              const el = window.document.getElementById(lineIds[0]);
+              top = el.offsetTop;
+              height = el.offsetHeight;
+              parent = el.parentElement.parentElement;
+            if (lineIds.length > 1) {
+              const lastEl = window.document.getElementById(lineIds[lineIds.length - 1]);
+              const bottom = lastEl.offsetTop + lastEl.offsetHeight;
+              height = bottom - top;
+            }
+            if (top !== null && height !== null && parent !== null) {
+              // cook up a div (if necessary) and position it 
+              let div = window.document.getElementById("code-annotation-line-highlight");
+              if (div === null) {
+                div = window.document.createElement("div");
+                div.setAttribute("id", "code-annotation-line-highlight");
+                div.style.position = 'absolute';
+                parent.appendChild(div);
+              }
+              div.style.top = top - 2 + "px";
+              div.style.height = height + 4 + "px";
+              div.style.left = 0;
+              let gutterDiv = window.document.getElementById("code-annotation-line-highlight-gutter");
+              if (gutterDiv === null) {
+                gutterDiv = window.document.createElement("div");
+                gutterDiv.setAttribute("id", "code-annotation-line-highlight-gutter");
+                gutterDiv.style.position = 'absolute';
+                const codeCell = window.document.getElementById(targetCell);
+                const gutter = codeCell.querySelector('.code-annotation-gutter');
+                gutter.appendChild(gutterDiv);
+              }
+              gutterDiv.style.top = top - 2 + "px";
+              gutterDiv.style.height = height + 4 + "px";
+            }
+            selectedAnnoteEl = annoteEl;
+          }
+        };
+        const unselectCodeLines = () => {
+          const elementsIds = ["code-annotation-line-highlight", "code-annotation-line-highlight-gutter"];
+          elementsIds.forEach((elId) => {
+            const div = window.document.getElementById(elId);
+            if (div) {
+              div.remove();
+            }
+          });
+          selectedAnnoteEl = undefined;
+        };
+          // Handle positioning of the toggle
+      window.addEventListener(
+        "resize",
+        throttle(() => {
+          elRect = undefined;
+          if (selectedAnnoteEl) {
+            selectCodeLines(selectedAnnoteEl);
+          }
+        }, 10)
+      );
+      function throttle(fn, ms) {
+      let throttle = false;
+      let timer;
+        return (...args) => {
+          if(!throttle) { // first call gets through
+              fn.apply(this, args);
+              throttle = true;
+          } else { // all the others get throttled
+              if(timer) clearTimeout(timer); // cancel #2
+              timer = setTimeout(() => {
+                fn.apply(this, args);
+                timer = throttle = false;
+              }, ms);
+          }
+        };
+      }
+        // Attach click handler to the DT
+        const annoteDls = window.document.querySelectorAll('dt[data-target-cell]');
+        for (const annoteDlNode of annoteDls) {
+          annoteDlNode.addEventListener('click', (event) => {
+            const clickedEl = event.target;
+            if (clickedEl !== selectedAnnoteEl) {
+              unselectCodeLines();
+              const activeEl = window.document.querySelector('dt[data-target-cell].code-annotation-active');
+              if (activeEl) {
+                activeEl.classList.remove('code-annotation-active');
+              }
+              selectCodeLines(clickedEl);
+              clickedEl.classList.add('code-annotation-active');
+            } else {
+              // Unselect the line
+              unselectCodeLines();
+              clickedEl.classList.remove('code-annotation-active');
+            }
+          });
+        }
+    const findCites = (el) => {
+      const parentEl = el.parentElement;
+      if (parentEl) {
+        const cites = parentEl.dataset.cites;
+        if (cites) {
+          return {
+            el,
+            cites: cites.split(' ')
+          };
+        } else {
+          return findCites(el.parentElement)
+        }
+      } else {
+        return undefined;
+      }
+    };
+    var bibliorefs = window.document.querySelectorAll('a[role="doc-biblioref"]');
+    for (var i=0; i<bibliorefs.length; i++) {
+      const ref = bibliorefs[i];
+      const citeInfo = findCites(ref);
+      if (citeInfo) {
+        tippyHover(citeInfo.el, function() {
+          var popup = window.document.createElement('div');
+          citeInfo.cites.forEach(function(cite) {
+            var citeDiv = window.document.createElement('div');
+            citeDiv.classList.add('hanging-indent');
+            citeDiv.classList.add('csl-entry');
+            var biblioDiv = window.document.getElementById('ref-' + cite);
+            if (biblioDiv) {
+              citeDiv.innerHTML = biblioDiv.innerHTML;
+            }
+            popup.appendChild(citeDiv);
+          });
+          return popup.innerHTML;
+        });
+      }
+    }
+  });
+  </script>
+</div> <!-- /content -->
+
+
+
+
+</body></html>
